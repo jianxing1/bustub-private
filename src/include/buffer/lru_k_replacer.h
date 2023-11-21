@@ -12,10 +12,12 @@
 
 #pragma once
 
+#include <algorithm>
 #include <limits>
 #include <list>
 #include <mutex>  // NOLINT
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "common/config.h"
@@ -23,7 +25,7 @@
 
 namespace bustub {
 
-enum class AccessType { Unknown = 0, Get, Scan };
+enum class AccessType { Unknown = 0, Lookup, Scan, Get };
 
 class LRUKNode {
  private:
@@ -44,7 +46,7 @@ class LRUKNode {
  * current timestamp and the timestamp of kth previous access.
  *
  * A frame with less than k historical references is given
- * +inf as its backward k-distance. When multipe frames have +inf backward k-distance,
+ * +inf as its backward k-distance. When multiple frames have +inf backward k-distance,
  * classical LRU algorithm is used to choose victim.
  */
 class LRUKReplacer {
@@ -56,6 +58,7 @@ class LRUKReplacer {
    * @brief a new LRUKReplacer.
    * @param num_frames the maximum number of frames the LRUReplacer will be required to store
    */
+  using frame_id_t = int;
   explicit LRUKReplacer(size_t num_frames, size_t k);
 
   DISALLOW_COPY_AND_MOVE(LRUKReplacer);
@@ -150,12 +153,27 @@ class LRUKReplacer {
  private:
   // TODO(student): implement me! You can replace these member variables as you like.
   // Remove maybe_unused if you start using them.
-  [[maybe_unused]] std::unordered_map<frame_id_t, LRUKNode> node_store_;
-  [[maybe_unused]] size_t current_timestamp_{0};
-  [[maybe_unused]] size_t curr_size_{0};
-  [[maybe_unused]] size_t replacer_size_;
-  [[maybe_unused]] size_t k_;
-  [[maybe_unused]] std::mutex latch_;
+  std::unordered_map<frame_id_t, LRUKNode> node_store_;
+  size_t current_timestamp_{0};
+  size_t curr_size_{0};
+  size_t max_size_;
+  size_t replacer_size_;
+  size_t k_;
+  std::mutex latch_;
+
+  using timestamp = std::list<size_t>;
+  using k_time = std::pair<frame_id_t, size_t>;
+  std::unordered_map<frame_id_t, timestamp> hist_;
+  std::unordered_map<frame_id_t, size_t> recorded_cnt_;
+  std::unordered_map<frame_id_t, bool> evictable_;
+
+  std::list<frame_id_t> new_frame_;
+  std::unordered_map<frame_id_t, std::list<frame_id_t>::iterator> new_locate_;
+
+  std::list<k_time> cache_frame_;
+  std::unordered_map<frame_id_t, std::list<k_time>::iterator> cache_locate_;
+
+  static auto CmpTimestamp(const k_time &t1, const k_time &t2) -> bool;
 };
 
 }  // namespace bustub

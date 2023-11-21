@@ -16,13 +16,13 @@
 #include <random>
 #include <string>
 
+#include "common/logger.h"
 #include "gtest/gtest.h"
-
 namespace bustub {
 
 // NOLINTNEXTLINE
 // Check whether pages containing terminal characters can be recovered
-TEST(BufferPoolManagerTest, DISABLED_BinaryDataTest) {
+TEST(BufferPoolManagerTest, BinaryDataTest) {
   const std::string db_name = "test.db";
   const size_t buffer_pool_size = 10;
   const size_t k = 5;
@@ -88,7 +88,7 @@ TEST(BufferPoolManagerTest, DISABLED_BinaryDataTest) {
 }
 
 // NOLINTNEXTLINE
-TEST(BufferPoolManagerTest, DISABLED_SampleTest) {
+TEST(BufferPoolManagerTest, SampleTest) {
   const std::string db_name = "test.db";
   const size_t buffer_pool_size = 10;
   const size_t k = 5;
@@ -140,6 +140,56 @@ TEST(BufferPoolManagerTest, DISABLED_SampleTest) {
   disk_manager->ShutDown();
   remove("test.db");
 
+  delete bpm;
+  delete disk_manager;
+}
+
+TEST(BufferPoolManagerTest, IsDirty) {  // NOLINT
+  auto *disk_manager = new DiskManager("test.db");
+  auto *bpm = new BufferPoolManager(1, disk_manager, 5);
+
+  // Make new page and write to it
+  page_id_t pageid0;
+  auto *page0 = bpm->NewPage(&pageid0);
+  ASSERT_NE(nullptr, page0);
+  ASSERT_EQ(0, page0->IsDirty());
+  strcpy(page0->GetData(), "page0");  // NOLINT
+  ASSERT_EQ(1, bpm->UnpinPage(pageid0, true));
+
+  // Fetch again but don't write. Assert it is still marked as dirty
+  page0 = bpm->FetchPage(pageid0);
+  ASSERT_NE(nullptr, page0);
+
+  ASSERT_EQ(1, page0->IsDirty());
+  ASSERT_EQ(1, bpm->UnpinPage(pageid0, false));
+
+  // Fetch and assert it is still dirty
+  page0 = bpm->FetchPage(pageid0);
+  ASSERT_NE(nullptr, page0);
+
+  ASSERT_EQ(1, page0->IsDirty());
+  ASSERT_EQ(1, bpm->UnpinPage(pageid0, false));
+
+  // Create a new page, assert it's not dirty
+  page_id_t pageid1;
+  auto *page1 = bpm->NewPage(&pageid1);
+  ASSERT_NE(nullptr, page1);
+
+  ASSERT_EQ(0, page1->IsDirty());
+
+  // Write to the page, and then delete it
+  strcpy(page1->GetData(), "page1");  // NOLINT
+  ASSERT_EQ(1, bpm->UnpinPage(pageid1, true));
+  ASSERT_EQ(1, page1->IsDirty());
+  ASSERT_EQ(1, bpm->DeletePage(pageid1));
+
+  // Fetch page 0 again, and confirm its not dirty
+  page0 = bpm->FetchPage(pageid0);
+  ASSERT_NE(nullptr, page0);
+  ASSERT_EQ(0, page0->IsDirty());
+
+  remove("test.db");
+  remove("test.log");
   delete bpm;
   delete disk_manager;
 }
