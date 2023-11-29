@@ -73,12 +73,21 @@ class BPlusTree {
   auto IsEmpty() const -> bool;
 
   // Insert a key-value pair into this B+ tree.
+  auto SplitLeaf(LeafPage *leaf, const KeyType &key, const ValueType &value, page_id_t *new_id) -> KeyType;
+  auto SplitInternal(InternalPage *internal, const KeyType &key, page_id_t *new_id, page_id_t new_child_id) -> KeyType;
+  auto OptimalInsert(const KeyType &key, const ValueType &value, Transaction *txn) -> int;
   auto Insert(const KeyType &key, const ValueType &value, Transaction *txn = nullptr) -> bool;
 
   // Remove a key and its value from this B+ tree.
+  void RemoveResGuardsPop(std::deque<WritePageGuard> &guards, std::deque<int> &keys_index, const KeyType &origin_key,
+                          const KeyType &new_key);
+  auto OptimalRemove(const KeyType &key, Transaction *txn) -> bool;
+
   void Remove(const KeyType &key, Transaction *txn);
 
   // Return the value associated with a given key
+  auto Find(const LeafPage *leaf_page, const KeyType &key) -> int;
+  auto Find(const InternalPage *integer_page, const KeyType &key) -> int;
   auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
 
   // Return the page id of the root node
@@ -116,6 +125,17 @@ class BPlusTree {
   // read data from file and remove one by one
   void RemoveFromFile(const std::string &file_name, Transaction *txn = nullptr);
 
+  /**
+   * @brief Read batch operations from input file, below is a sample file format
+   * insert some keys and delete 8, 9 from the tree with one step.
+   * { i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i30 d8 d9 } //  batch.txt
+   * B+ Tree(4 max leaf, 4 max internal) after processing:
+   *                            (5)
+   *                 (3)                (7)
+   *            (1,2)    (3,4)    (5,6)    (7,10,30) //  The output tree example
+   */
+  void BatchOpsFromFile(const std::string &file_name, Transaction *txn = nullptr);
+
  private:
   /* Debug Routines for FREE!! */
   void ToGraph(page_id_t page_id, const BPlusTreePage *page, std::ofstream &out);
@@ -141,7 +161,7 @@ class BPlusTree {
 };
 
 /**
- * @brief for test only. PrintableBPlusTree is a printalbe B+ tree.
+ * @brief for test only. PrintableBPlusTree is a printable B+ tree.
  * We first convert B+ tree into a printable B+ tree and the print it.
  */
 struct PrintableBPlusTree {

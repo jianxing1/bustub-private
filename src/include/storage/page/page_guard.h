@@ -38,6 +38,8 @@ class BasicPageGuard {
    */
   void Drop();
 
+  void SetDirty(bool is_dirty) { is_dirty_ = is_dirty; }
+
   /** TODO(P1): Add implementation
    *
    * @brief Move assignment for BasicPageGuard
@@ -85,7 +87,7 @@ class BasicPageGuard {
   BufferPoolManager *bpm_{nullptr};
   Page *page_{nullptr};
   bool is_dirty_{false};
-  bool is_dropped_{false};
+  // bool is_dropped_{false};
 };
 
 class ReadPageGuard {
@@ -133,6 +135,8 @@ class ReadPageGuard {
    * as if you were dropping the guard.
    */
   ~ReadPageGuard();
+
+  void SetDirty(bool is_dirty) { guard_.SetDirty(is_dirty); }
 
   auto PageId() -> page_id_t { return guard_.PageId(); }
 
@@ -184,6 +188,8 @@ class WritePageGuard {
    * want to release these resources.
    */
   void Drop();
+
+  void SetDirty(bool is_dirty) { guard_.SetDirty(is_dirty); }
 
   /** TODO(P1): Add implementation
    *
