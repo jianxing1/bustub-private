@@ -47,8 +47,17 @@ class NestIndexJoinExecutor : public AbstractExecutor {
 
   auto Next(Tuple *tuple, RID *rid) -> bool override;
 
+  void GetOutputTuple(Tuple *tuple, bool is_matched);
+
  private:
   /** The nested index join plan node. */
   const NestedIndexJoinPlanNode *plan_;
+  TableInfo *RightTableInfo;
+  IndexInfo *indexInfo;
+  std::unique_ptr<AbstractExecutor> left_executor;
+
+  Tuple left_tuple;
+  std::vector<Tuple> right_tuples;
+  size_t ptr;
 };
 }  // namespace bustub

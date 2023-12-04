@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/executors/nested_index_join_executor.h"
+#include "type/value_factory.h"
 
 namespace bustub {
 
@@ -21,10 +22,76 @@ NestIndexJoinExecutor::NestIndexJoinExecutor(ExecutorContext *exec_ctx, const Ne
     // Note for 2023 Spring: You ONLY need to implement left join and inner join.
     throw bustub::NotImplementedException(fmt::format("join type {} not supported", plan->GetJoinType()));
   }
+  plan_ = plan;
+  left_executor = std::move(child_executor);
 }
 
-void NestIndexJoinExecutor::Init() { throw NotImplementedException("NestIndexJoinExecutor is not implemented"); }
+void NestIndexJoinExecutor::Init() {
+  auto catalog = exec_ctx_->GetCatalog();
+  RightTableInfo = catalog->GetTable(plan_->GetInnerTableOid());
+  indexInfo = catalog->GetIndex(plan_->GetIndexOid());
+  left_executor->Init();
+  ptr = 0;
+}
 
-auto NestIndexJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool { return false; }
+void NestIndexJoinExecutor::GetOutputTuple(Tuple *tuple, bool is_matched) {
+  std::vector<Value> out_values;
+
+  auto left_col_cnts = left_executor->GetOutputSchema().GetColumnCount();
+  auto right_col_cnts = RightTableInfo->schema_.GetColumnCount();
+
+  for (uint32_t i = 0; i < left_col_cnts; ++i) {
+    out_values.push_back(left_tuple.GetValue(&left_executor->GetOutputSchema(), i));
+  }
+
+  if (is_matched) {
+    for (uint32_t i = 0; i < right_col_cnts; ++i) {
+      out_values.push_back(right_tuples[ptr].GetValue(&RightTableInfo->schema_, i));
+    }
+    ++ptr;
+  } else {
+    for (uint32_t i = 0; i < right_col_cnts; ++i) {
+      out_values.push_back(ValueFactory::GetNullValueByType(TypeId::INTEGER));
+    }
+  }
+  *tuple = Tuple(out_values, &GetOutputSchema());
+}
+
+auto NestIndexJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
+  while (true) {
+    if (ptr < right_tuples.size()) {
+      GetOutputTuple(tuple, true);
+      return true;
+    }
+    if (!left_executor->Next(&left_tuple, rid)) {
+      return false;
+    }
+
+    auto value = plan_->KeyPredicate()->Evaluate(&left_tuple, left_executor->GetOutputSchema());
+    std::vector<Value> values{value};
+    Tuple tuple_ = Tuple(values, indexInfo->index_->GetKeySchema());
+
+    std::vector<RID> result;
+    indexInfo->index_->ScanKey(tuple_, &result, exec_ctx_->GetTransaction());
+
+    if (result.size() == 0) {
+      if (plan_->GetJoinType() == JoinType::LEFT) {
+        GetOutputTuple(tuple, false);
+        return true;
+      }
+      continue;
+    } else {
+      right_tuples.clear();
+
+      for (auto &x : result) {
+        auto right_tuple = RightTableInfo->table_->GetTuple(x).second;
+        right_tuples.push_back(right_tuple);
+      }
+      ptr = 0;
+      GetOutputTuple(tuple, true);
+    }
+  }
+  return true;
+}
 
 }  // namespace bustub

@@ -21,7 +21,6 @@
 #include "execution/plans/abstract_plan.h"
 
 namespace bustub {
-
 /**
  * Hash join performs a JOIN operation with a hash table.
  */
