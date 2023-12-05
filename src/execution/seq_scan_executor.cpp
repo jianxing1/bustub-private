@@ -11,81 +11,93 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/executors/seq_scan_executor.h"
-#include "type/value_factory.h"
 
 namespace bustub {
 
 SeqScanExecutor::SeqScanExecutor(ExecutorContext *exec_ctx, const SeqScanPlanNode *plan)
-    : AbstractExecutor(exec_ctx), plan_(plan) {}
-
-SeqScanExecutor::~SeqScanExecutor() {
-  if (!init_throw_error_ && iter_ != nullptr) {
-    delete iter_;
-    iter_ = nullptr;
-  }
+    : AbstractExecutor(exec_ctx), plan_(plan) {
+  txn_ = exec_ctx_->GetTransaction();
 }
 
 void SeqScanExecutor::Init() {
-  table_oid_ = plan_->GetTableOid();
+  table_oid_t table_oid = plan_->GetTableOid();
 
-  if (exec_ctx_->IsDelete()) {
-    TryLockTable(bustub::LockManager::LockMode::INTENTION_EXCLUSIVE, table_oid_);
-  } else {
-    auto iso_level = exec_ctx_->GetTransaction()->GetIsolationLevel();
-    if (iso_level == IsolationLevel::READ_COMMITTED || iso_level == IsolationLevel::REPEATABLE_READ) {
-      TryLockTable(bustub::LockManager::LockMode::INTENTION_SHARED, table_oid_);
+  // for mvcc
+  if (txn_ != nullptr) {
+    if (exec_ctx_->IsDelete()) {
+      if (!exec_ctx_->GetLockManager()->LockTable(txn_, LockManager::LockMode::INTENTION_EXCLUSIVE, table_oid)) {
+        throw ExecutionException("Grant IX table lock fails");
+      }
+    } else if (txn_->GetIsolationLevel() != IsolationLevel::READ_UNCOMMITTED &&
+               !txn_->IsTableIntentionExclusiveLocked(table_oid) &&
+               !exec_ctx_->GetLockManager()->LockTable(txn_, LockManager::LockMode::INTENTION_SHARED, table_oid)) {
+      throw ExecutionException("Grant IS table lock fails");
     }
   }
 
-  auto catalog = exec_ctx_->GetCatalog();
-  auto talbe_info = catalog->GetTable(table_oid_);
-  auto &table = talbe_info->table_;
-  iter_ = new TableIterator(table->MakeEagerIterator());
+  auto info = exec_ctx_->GetCatalog()->GetTable(table_oid);
+  // auto tmp_it = info->table_->MakeIterator();  // for Halloween problem, used in lib3
+  //  auto tmp_it = info->table_->MakeEagerIterator();
+  auto tmp_it = info->table_->MakeEagerIterator();
+  it_.emplace(std::move(tmp_it));
+
+  std::string loginfo = "Thread " + std::to_string(pthread_self()) + ":Init seq_scan_executor";
+  LOG_DEBUG("%s", loginfo.c_str());
 }
 
 auto SeqScanExecutor::Next(Tuple *tuple, RID *rid) -> bool {
   while (true) {
-    if (iter_->IsEnd()) {
-      auto iso_level = exec_ctx_->GetTransaction()->GetIsolationLevel();
-      if (iso_level == IsolationLevel::READ_COMMITTED && !exec_ctx_->IsDelete()) {
-        TryUnLockTable(table_oid_);
+    auto oid = plan_->GetTableOid();
+    if (it_->IsEnd()) {
+      if (txn_ != nullptr && txn_->GetIsolationLevel() == IsolationLevel::READ_COMMITTED &&
+          txn_->IsTableIntentionSharedLocked(oid)) {
+        txn_->LockTxn();
+        auto release_set = (*txn_->GetSharedRowLockSet())[oid];
+        txn_->UnlockTxn();
+        for (auto locked_rid : release_set) {
+          exec_ctx_->GetLockManager()->UnlockRow(txn_, oid, locked_rid);
+        }
+
+        exec_ctx_->GetLockManager()->UnlockTable(txn_, oid);
       }
-      delete iter_;
-      iter_ = nullptr;
       return false;
     }
 
-    *tuple = iter_->GetTuple().second;
-
-    if (exec_ctx_->IsDelete()) {
-      TryLockRow(bustub::LockManager::LockMode::EXCLUSIVE, table_oid_, tuple->GetRid());
-    } else {
-      auto iso_level = exec_ctx_->GetTransaction()->GetIsolationLevel();
-      if (iso_level == IsolationLevel::READ_COMMITTED || iso_level == IsolationLevel::REPEATABLE_READ) {
-        TryLockRow(bustub::LockManager::LockMode::SHARED, table_oid_, tuple->GetRid());
+    // for MVCC
+    auto cur_rid = it_->GetRID();
+    if (txn_ != nullptr) {
+      if (exec_ctx_->IsDelete()) {
+        if (!exec_ctx_->GetLockManager()->LockRow(txn_, LockManager::LockMode::EXCLUSIVE, plan_->GetTableOid(),
+                                                  cur_rid)) {
+          throw ExecutionException("Grant X row lock fails");
+        }
+      } else {
+        if (txn_->GetIsolationLevel() != IsolationLevel::READ_UNCOMMITTED) {
+          if (!txn_->IsRowExclusiveLocked(oid, cur_rid) &&
+              !exec_ctx_->GetLockManager()->LockRow(txn_, LockManager::LockMode::SHARED, plan_->GetTableOid(),
+                                                    cur_rid)) {
+            throw ExecutionException("Grant S row lock fails");
+          }
+        }
       }
     }
 
-    if (iter_->GetTuple().first.is_deleted_ ||
-        (plan_->filter_predicate_ != nullptr &&
-         plan_->filter_predicate_->Evaluate(tuple, exec_ctx_->GetCatalog()->GetTable(table_oid_)->schema_)
-                 .CompareEquals(ValueFactory::GetBooleanValue(false)) == CmpBool::CmpTrue)) {
-      TryUnLockRow(table_oid_, tuple->GetRid(), true);
-      ++(*iter_);
-      continue;
+    auto tuple_pair = it_->GetTuple();
+    ++(*it_);
+    if (!tuple_pair.first.is_deleted_) {
+      // handle predicate, in case that merge filter with seq scan
+      if (plan_->filter_predicate_ != nullptr) {
+        auto value = plan_->filter_predicate_->Evaluate(&tuple_pair.second, plan_->OutputSchema());
+        if (!value.IsNull() && !value.GetAs<bool>()) {
+          continue;
+        }
+      }
+      *tuple = tuple_pair.second;
+      *rid = tuple_pair.second.GetRid();
+      return true;
     }
-    auto iso_level = exec_ctx_->GetTransaction()->GetIsolationLevel();
-    if (iso_level == IsolationLevel::READ_COMMITTED && !exec_ctx_->IsDelete()) {
-      TryUnLockRow(table_oid_, tuple->GetRid());
-    }
-
-    *tuple = iter_->GetTuple().second;
-    *rid = tuple->GetRid();
-    break;
   }
-
-  ++(*iter_);
-  return true;
+  return false;
 }
 
 }  // namespace bustub

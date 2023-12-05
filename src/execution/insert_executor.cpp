@@ -18,60 +18,74 @@ namespace bustub {
 
 InsertExecutor::InsertExecutor(ExecutorContext *exec_ctx, const InsertPlanNode *plan,
                                std::unique_ptr<AbstractExecutor> &&child_executor)
-    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {}
+    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
+  txn_ = exec_ctx->GetTransaction();
+}
 
 void InsertExecutor::Init() {
-  auto catalog = exec_ctx_->GetCatalog();
-  auto table_oid = plan_->TableOid();
-  try {
-    bool success = exec_ctx_->GetLockManager()->LockTable(
-        exec_ctx_->GetTransaction(), bustub::LockManager::LockMode::INTENTION_EXCLUSIVE, table_oid);
-    if (!success) {
-      const std::string info = "seqscan table IX lock fail";
-      throw ExecutionException(info);
-    }
-  } catch (TransactionAbortException &e) {
-    const std::string info = "seqscan table IX lock fail";
-    throw ExecutionException(info);
-  }
-
-  table_info_ = catalog->GetTable(table_oid);
-  index_infos_ = catalog->GetTableIndexes(table_info_->name_);
-  has_out_ = false;
   child_executor_->Init();
+
+  table_oid_t table_oid = plan_->TableOid();
+  table_info_ = exec_ctx_->GetCatalog()->GetTable(table_oid);
+  txn_ = exec_ctx_->GetTransaction();
+  // for mvcc
+  if (txn_ != nullptr) {
+    bool lock_status = false;
+    try {
+      lock_status = exec_ctx_->GetLockManager()->LockTable(txn_, LockManager::LockMode::INTENTION_EXCLUSIVE, table_oid);
+    } catch (TransactionAbortException &e) {
+      throw ExecutionException("Grant IX table lock fails");
+    }
+
+    if (!lock_status) {
+      throw ExecutionException("Grant IX table lock fails");
+    }
+  }
 }
 
 auto InsertExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
-  if (has_out_) {
+  if (executed_) {
     return false;
   }
-  int nums = 0;
-  while (child_executor_->Next(tuple, rid)) {
-    TupleMeta tuplemeta = {INVALID_TXN_ID, INVALID_TXN_ID, false};
-    auto rid_optional = table_info_->table_->InsertTuple(tuplemeta, *tuple, exec_ctx_->GetLockManager(),
-                                                         exec_ctx_->GetTransaction(), table_info_->oid_);
-    if (rid_optional.has_value()) {
-      *rid = rid_optional.value();
-      nums++;
+
+  int insert_num = 0;
+
+  auto table_name = table_info_->name_;
+  auto indexes = exec_ctx_->GetCatalog()->GetTableIndexes(table_name);
+
+  Tuple child_tuple;
+  RID child_rid;
+  while (child_executor_->Next(&child_tuple, &child_rid)) {
+    // insert tuple to table_heap
+    auto insert_rid = table_info_->table_->InsertTuple(TupleMeta{INVALID_TXN_ID, INVALID_TXN_ID, false}, child_tuple,
+                                                       exec_ctx_->GetLockManager(), txn_, plan_->TableOid());
+    if (insert_rid == std::nullopt) {
+      continue;
     }
-
-    auto twr = TableWriteRecord{table_info_->oid_, *rid, table_info_->table_.get()};
-    twr.wtype_ = WType::INSERT;
-    exec_ctx_->GetTransaction()->GetWriteSet()->push_back(twr);
-
-    for (auto &info : index_infos_) {
-      Tuple partial_tuple =
-          tuple->KeyFromTuple(table_info_->schema_, *(info->index_->GetKeySchema()), info->index_->GetKeyAttrs());
-      info->index_->InsertEntry(partial_tuple, *rid, exec_ctx_->GetTransaction());
-      auto iwr = IndexWriteRecord{*rid,          table_info_->oid_, WType::INSERT,
-                                  partial_tuple, info->index_oid_,  exec_ctx_->GetCatalog()};
-      exec_ctx_->GetTransaction()->GetIndexWriteSet()->push_back(iwr);
+    // for mvcc
+    if (txn_ != nullptr) {
+      txn_->LockTxn();
+      TableWriteRecord record{plan_->TableOid(), insert_rid.value(), table_info_->table_.get()};
+      record.wtype_ = WType::INSERT;
+      txn_->AppendTableWriteRecord(record);
+      txn_->UnlockTxn();
+    }
+    ++insert_num;
+    // update indexes
+    for (auto index : indexes) {
+      auto key_schema = index->index_->GetKeySchema();
+      auto attrs = index->index_->GetKeyAttrs();
+      Tuple key = child_tuple.KeyFromTuple(table_info_->schema_, *key_schema, attrs);
+      index->index_->InsertEntry(key, *insert_rid, nullptr);
     }
   }
-  std::vector<Value> values{};
-  values.emplace_back(Value(INTEGER, nums));
-  *tuple = Tuple(values, &GetOutputSchema());
-  has_out_ = true;
+
+  executed_ = true;
+
+  std::vector<Value> single_int_value{{TypeId::INTEGER, insert_num}};
+  single_int_value.reserve(1);
+  *tuple = Tuple{single_int_value, &GetOutputSchema()};
+
   return true;
 }
 

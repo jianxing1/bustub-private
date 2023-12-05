@@ -31,31 +31,28 @@ void TransactionManager::Commit(Transaction *txn) {
 
 void TransactionManager::Abort(Transaction *txn) {
   /* TODO: revert all the changes in write set */
-  while (!txn->GetWriteSet()->empty()) {
-    auto twr = txn->GetWriteSet()->back();
-
-    if (twr.wtype_ == WType::INSERT) {
-      auto tuple_meta = twr.table_heap_->GetTupleMeta(twr.rid_);
-      tuple_meta.is_deleted_ = true;
-      twr.table_heap_->UpdateTupleMeta(tuple_meta, twr.rid_);
-    } else if (twr.wtype_ == WType::DELETE) {
-      auto tuple_meta = twr.table_heap_->GetTupleMeta(twr.rid_);
-      tuple_meta.is_deleted_ = false;
-      twr.table_heap_->UpdateTupleMeta(tuple_meta, twr.rid_);
-    } else if (twr.wtype_ == WType::UPDATE) {
-      twr.table_heap_->UpdateTupleInPlaceUnsafe(twr.old_tuple_meta_, twr.old_tuple_, twr.rid_);
+  txn->LockTxn();
+  auto revert_records = txn->GetWriteSet();
+  txn->UnlockTxn();
+  std::string loginfo = "Thread " + std::to_string(pthread_self()) + ":txn " + std::to_string(txn->GetTransactionId()) +
+                        ":revert changes start";
+  LOG_DEBUG("%s", loginfo.c_str());
+  // revert from back to front
+  for (auto it = revert_records->rbegin(); it != revert_records->rend(); ++it) {
+    switch (it->wtype_) {
+      case WType::INSERT:
+        it->table_heap_->UpdateTupleMeta({INVALID_TXN_ID, INVALID_TXN_ID, true}, it->rid_);
+        break;
+      case WType::DELETE:
+        it->table_heap_->UpdateTupleMeta({INVALID_TXN_ID, INVALID_TXN_ID, false}, it->rid_);
+        break;
+      case WType::UPDATE:
+        break;
     }
-    txn->GetWriteSet()->pop_back();
   }
-  while (!txn->GetIndexWriteSet()->empty()) {
-    auto iwr = txn->GetIndexWriteSet()->back();
-    if (iwr.wtype_ == WType::INSERT) {
-      iwr.catalog_->GetIndex(iwr.index_oid_)->index_->DeleteEntry(iwr.tuple_, iwr.rid_, txn);
-    } else if (iwr.wtype_ == WType::DELETE) {
-      iwr.catalog_->GetIndex(iwr.index_oid_)->index_->InsertEntry(iwr.tuple_, iwr.rid_, txn);
-    }
-    txn->GetIndexWriteSet()->pop_back();
-  }
+  loginfo = "Thread " + std::to_string(pthread_self()) + ":txn " + std::to_string(txn->GetTransactionId()) +
+            ":revert changes complete";
+  LOG_DEBUG("%s", loginfo.c_str());
 
   ReleaseLocks(txn);
 

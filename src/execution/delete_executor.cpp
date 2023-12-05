@@ -18,45 +18,55 @@ namespace bustub {
 
 DeleteExecutor::DeleteExecutor(ExecutorContext *exec_ctx, const DeletePlanNode *plan,
                                std::unique_ptr<AbstractExecutor> &&child_executor)
-    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {}
+    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
+  txn_ = exec_ctx->GetTransaction();
+}
 
 void DeleteExecutor::Init() {
-  auto catalog = exec_ctx_->GetCatalog();
-  table_info_ = catalog->GetTable(plan_->TableOid());
-  index_infos_ = catalog->GetTableIndexes(table_info_->name_);
-  has_out_ = false;
   child_executor_->Init();
+
+  table_oid_t table_oid = plan_->TableOid();
+  table_info_ = exec_ctx_->GetCatalog()->GetTable(table_oid);
 }
 
 auto DeleteExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
-  if (has_out_) {
+  if (executed_) {
     return false;
   }
-  int nums = 0;
-  while (child_executor_->Next(tuple, rid)) {
-    auto tuplemeta = table_info_->table_->GetTupleMeta(*rid);
-    tuplemeta.is_deleted_ = true;
-    table_info_->table_->UpdateTupleMeta(tuplemeta, *rid);
 
-    auto twr = TableWriteRecord{table_info_->oid_, *rid, table_info_->table_.get()};
-    twr.wtype_ = WType::DELETE;
-    exec_ctx_->GetTransaction()->GetWriteSet()->push_back(twr);
+  auto table_name = table_info_->name_;
 
-    nums++;
+  auto indexes = exec_ctx_->GetCatalog()->GetTableIndexes(table_name);
 
-    for (auto &info : index_infos_) {
-      Tuple partial_tuple =
-          tuple->KeyFromTuple(table_info_->schema_, *(info->index_->GetKeySchema()), info->index_->GetKeyAttrs());
-      info->index_->DeleteEntry(partial_tuple, *rid, exec_ctx_->GetTransaction());
-      auto iwr = IndexWriteRecord{*rid,          table_info_->oid_, WType::DELETE,
-                                  partial_tuple, info->index_oid_,  exec_ctx_->GetCatalog()};
-      exec_ctx_->GetTransaction()->GetIndexWriteSet()->push_back(iwr);
+  int delete_num = 0;
+
+  Tuple child_tuple;
+  RID child_rid;
+  while (child_executor_->Next(&child_tuple, &child_rid)) {
+    table_info_->table_->UpdateTupleMeta({INVALID_TXN_ID, INVALID_TXN_ID, true}, child_rid);
+    // for mvcc
+    if (txn_ != nullptr) {
+      txn_->LockTxn();
+      TableWriteRecord record{plan_->TableOid(), child_rid, table_info_->table_.get()};
+      record.wtype_ = WType::DELETE;
+      txn_->AppendTableWriteRecord(record);
+      txn_->UnlockTxn();
     }
+    for (auto index : indexes) {
+      auto key_schema = index->index_->GetKeySchema();
+      auto attrs = index->index_->GetKeyAttrs();
+      Tuple key = child_tuple.KeyFromTuple(table_info_->schema_, *key_schema, attrs);
+      index->index_->DeleteEntry(key, child_rid, nullptr);
+    }
+    ++delete_num;
   }
-  std::vector<Value> values{};
-  values.emplace_back(Value(INTEGER, nums));
-  *tuple = Tuple(values, &GetOutputSchema());
-  has_out_ = true;
+
+  executed_ = true;
+
+  std::vector<Value> single_int_value{{TypeId::INTEGER, delete_num}};
+  single_int_value.reserve(1);
+  *tuple = Tuple{single_int_value, &GetOutputSchema()};
+
   return true;
 }
 

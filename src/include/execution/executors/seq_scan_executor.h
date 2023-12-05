@@ -12,7 +12,6 @@
 
 #pragma once
 
-#include <string>
 #include <vector>
 
 #include "execution/executor_context.h"
@@ -34,8 +33,6 @@ class SeqScanExecutor : public AbstractExecutor {
    */
   SeqScanExecutor(ExecutorContext *exec_ctx, const SeqScanPlanNode *plan);
 
-  ~SeqScanExecutor() override;
-
   /** Initialize the sequential scan */
   void Init() override;
 
@@ -50,102 +47,14 @@ class SeqScanExecutor : public AbstractExecutor {
   /** @return The output schema for the sequential scan */
   auto GetOutputSchema() const -> const Schema & override { return plan_->OutputSchema(); }
 
-  auto TryLockTable(const bustub::LockManager::LockMode &lock_mode, const table_oid_t &oid) {
-    std::string type;
-    switch (lock_mode) {
-      case bustub::LockManager::LockMode::EXCLUSIVE:
-        type = "X";
-        break;
-      case bustub::LockManager::LockMode::INTENTION_EXCLUSIVE:
-        type = "IX";
-        break;
-      case bustub::LockManager::LockMode::INTENTION_SHARED:
-        type = "IS";
-        break;
-      case bustub::LockManager::LockMode::SHARED:
-        type = "S";
-        break;
-      case bustub::LockManager::LockMode::SHARED_INTENTION_EXCLUSIVE:
-        type = "SIX";
-        break;
-      default:
-        break;
-    }
-    try {
-      bool success = exec_ctx_->GetLockManager()->LockTable(exec_ctx_->GetTransaction(), lock_mode, oid);
-      if (!success) {
-        const std::string info = "seqscan table " + type + " lock fail";
-        init_throw_error_ = true;
-        throw ExecutionException(info);
-      }
-    } catch (TransactionAbortException &e) {
-      const std::string info = "seqscan table " + type + " lock fail";
-      init_throw_error_ = true;
-      throw ExecutionException(info);
-    }
-  }
-
-  auto TryUnLockTable(const table_oid_t &oid) {
-    try {
-      bool success = exec_ctx_->GetLockManager()->UnlockTable(exec_ctx_->GetTransaction(), oid);
-      if (!success) {
-        const std::string info = "seqscan table unlock fail";
-        init_throw_error_ = true;
-        throw ExecutionException(info);
-      }
-    } catch (TransactionAbortException &e) {
-      const std::string info = "seqscan table unlock fail";
-      init_throw_error_ = true;
-      throw ExecutionException(info);
-    }
-  }
-
-  auto TryLockRow(const bustub::LockManager::LockMode &lock_mode, const table_oid_t &oid, const RID &rid) {
-    std::string type;
-    switch (lock_mode) {
-      case bustub::LockManager::LockMode::EXCLUSIVE:
-        type = "X";
-        break;
-      case bustub::LockManager::LockMode::SHARED:
-        type = "S";
-        break;
-      default:
-        break;
-    }
-    try {
-      bool success = exec_ctx_->GetLockManager()->LockRow(exec_ctx_->GetTransaction(), lock_mode, oid, rid);
-      if (!success) {
-        const std::string info = "seqscan row " + type + " lock fail";
-        init_throw_error_ = true;
-        throw ExecutionException(info);
-      }
-    } catch (TransactionAbortException &e) {
-      const std::string info = "seqscan row " + type + " lock fail";
-      init_throw_error_ = true;
-      throw ExecutionException(info);
-    }
-  }
-
-  auto TryUnLockRow(const table_oid_t &oid, const RID &rid, bool force = false) {
-    try {
-      bool success = exec_ctx_->GetLockManager()->UnlockRow(exec_ctx_->GetTransaction(), oid, rid, force);
-      if (!success) {
-        const std::string info = "seqscan row unlock fail";
-        init_throw_error_ = true;
-        throw ExecutionException(info);
-      }
-    } catch (TransactionAbortException &e) {
-      const std::string info = "seqscan row unlock fail";
-      init_throw_error_ = true;
-      throw ExecutionException(info);
-    }
-  }
-
  private:
   /** The sequential scan plan node to be executed */
   const SeqScanPlanNode *plan_;
-  TableIterator *iter_;
-  table_oid_t table_oid_;
-  bool init_throw_error_{false};
+
+  //  const TableInfo info;
+
+  std::optional<TableIterator> it_;
+
+  Transaction *txn_;
 };
 }  // namespace bustub
